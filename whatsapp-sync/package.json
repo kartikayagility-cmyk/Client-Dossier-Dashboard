@@ -1,0 +1,14 @@
+{
+  "name": "whatsapp-dashboard-sync",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Weekly script: WhatsApp exports -> Claude extraction -> Supabase client dossier",
+  "main": "sync.js",
+  "scripts": {
+    "sync": "node sync.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "dotenv": "^16.4.5"
+  }
+}

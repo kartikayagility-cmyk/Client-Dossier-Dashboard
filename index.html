@@ -1,0 +1,577 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Client Dossier</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'IBM Plex Sans', sans-serif; background: #1D2830; color: #1D2830; }
+  input, textarea, select, button { font-family: 'IBM Plex Sans', sans-serif; }
+  ::selection { background: #C2BE8555; }
+  .scroll::-webkit-scrollbar { width: 8px; }
+  .scroll::-webkit-scrollbar-thumb { background: #8C8763; border-radius: 8px; }
+  .row:hover { background: #2C3A45 !important; }
+  .btn { cursor: pointer; transition: opacity .15s ease, transform .1s ease; }
+  .btn:hover { opacity: .82; }
+  .btn:active { transform: scale(.97); }
+  .x:hover { opacity: 1 !important; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+const { useState, useEffect, useRef } = React;
+// ============================ SETUP (edit these 3 lines) ============================
+// See README.md for where to find each value.
+const SUPABASE_URL = "YOUR_SUPABASE_PROJECT_URL";        // e.g. https://abcdxyz.supabase.co
+const SUPABASE_ANON_KEY = "YOUR_SUPABASE_PUBLISHABLE_KEY"; // the "publishable" / anon key, NEVER the secret/service_role key
+const BRAND_NAME = "YOUR COMPANY NAME";                  // shown on the login screen and header
+// ====================================================================================
+document.title = BRAND_NAME + " — Client Dossier";
+if (SUPABASE_URL.includes("YOUR_") || SUPABASE_ANON_KEY.includes("YOUR_")) {
+  document.getElementById("root").innerHTML =
+    '<div style="max-width:560px;margin:80px auto;padding:24px;background:#F5F9FD;border-radius:12px;font-family:sans-serif;line-height:1.5">' +
+    '<h2 style="margin-top:0">Setup needed</h2>' +
+    '<p>Open <code>index.html</code> in a text editor and fill in the three lines marked <b>SETUP</b> near the top ' +
+    '(<code>SUPABASE_URL</code>, <code>SUPABASE_ANON_KEY</code>, <code>BRAND_NAME</code>). Full steps are in <code>README.md</code>.</p></div>';
+  throw new Error("Dashboard not configured yet: fill in the SETUP block in index.html");
+}
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const NOTE_TYPES = {
+  note: { label: "Note", color: "#6B7A8F" },
+  followup: { label: "Follow-up", color: "#A6822C" },
+  meeting: { label: "Meeting Recap", color: "#3B6E5B" },
+  call: { label: "Call", color: "#5B4B8A" }
+};
+const uid = () => Math.random().toString(36).slice(2, 10);
+const todayISO = () => (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+const UNGROUPED = "__none__";
+function daysUntilAnnual(dateStr) {
+  if (!dateStr) return null;
+  const d = /* @__PURE__ */ new Date(dateStr + "T00:00:00");
+  if (isNaN(d)) return null;
+  const now = /* @__PURE__ */ new Date();
+  const thisYear = new Date(now.getFullYear(), d.getMonth(), d.getDate());
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  let diff = Math.round((thisYear - today) / 864e5);
+  if (diff < 0) {
+    const nextYear = new Date(now.getFullYear() + 1, d.getMonth(), d.getDate());
+    diff = Math.round((nextYear - today) / 864e5);
+  }
+  return diff;
+}
+const occasionLabel = (d) => d === 0 ? "Today" : d === 1 ? "Tomorrow" : `in ${d}d`;
+const fmtDate = (d) => {
+  if (!d) return "";
+  const dt = /* @__PURE__ */ new Date(d + "T00:00:00");
+  return isNaN(dt) ? d : dt.toLocaleDateString(void 0, { year: "numeric", month: "long", day: "numeric" });
+};
+const fmtDateDMY = (d) => {
+  if (!d) return "";
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d);
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : d;
+};
+const previewEvents = (client) => [
+  ...(client.notes || []).map((n) => ({ ...n, __kind: "note" })),
+  ...(client.meetings || []).map((m) => ({ id: m.id, date: m.date, title: m.title, content: m.notes, __kind: "meeting" }))
+].sort((a, b) => (b.date || "").localeCompare(a.date || "")).slice(0, 5).reverse();
+const fmtMoney = (n) => {
+  const num = parseFloat(n);
+  if (isNaN(num)) return n;
+  return num.toLocaleString(void 0, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+};
+function LoginScreen({ onLoggedIn }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function submit() {
+    setBusy(true);
+    setError("");
+    const { error: error2 } = await supabaseClient.auth.signInWithPassword({ email, password });
+    setBusy(false);
+    if (error2) setError(error2.message);
+    else onLoggedIn();
+  }
+  return /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", height: "100vh" } }, /* @__PURE__ */ React.createElement("div", { style: { background: "#C2BE85", border: "1px solid #8C8763", borderRadius: 14, padding: "36px 40px", width: 320, textAlign: "center" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, letterSpacing: 2, color: "#B54B4B" } }, BRAND_NAME.toUpperCase()), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Sans', sans-serif", fontWeight: 700, fontSize: 24, color: "#F5F9FD", marginTop: 4 } }, "Client Dossier"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: "#5B5738", margin: "8px 0 18px" } }, "Sign in to continue."), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      placeholder: "Email",
+      value: email,
+      onChange: (e) => setEmail(e.target.value),
+      style: { width: "100%", padding: "9px 12px", borderRadius: 7, border: "1px solid #8C8763", fontSize: 14, marginBottom: 8 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      placeholder: "Password",
+      type: "password",
+      value: password,
+      onChange: (e) => setPassword(e.target.value),
+      onKeyDown: (e) => e.key === "Enter" && submit(),
+      style: { width: "100%", padding: "9px 12px", borderRadius: 7, border: "1px solid #8C8763", fontSize: 14, marginBottom: 8 }
+    }
+  ), error && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: "#B54B4B", marginBottom: 8 } }, error), /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      className: "btn",
+      disabled: busy,
+      onClick: submit,
+      style: { background: "#C2BE85", color: "#1D2830", border: "none", borderRadius: 6, padding: "9px 16px", fontSize: 13, fontWeight: 600, width: "100%" }
+    },
+    busy ? "Signing in\u2026" : "Sign in"
+  ), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: "#5B5738", marginTop: 14 } }, "Accounts are created in the Supabase dashboard \u2014 see the README for how to add you and your colleague.")));
+}
+function App() {
+  const [session, setSession] = useState(null);
+  const [checkingSession, setCheckingSession] = useState(true);
+  const [clients, setClients] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedId, setSelectedId] = useState(null);
+  const [search, setSearch] = useState("");
+  const [collapsedFamilies, setCollapsedFamilies] = useState({});
+  const [clock, setClock] = useState(Date.now());
+  const [addingClient, setAddingClient] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newFamily, setNewFamily] = useState("");
+  const [editingInfo, setEditingInfo] = useState(false);
+  const [addingNoteType, setAddingNoteType] = useState(null);
+  const [noteDraft, setNoteDraft] = useState("");
+  const [noteTitleDraft, setNoteTitleDraft] = useState("");
+  const [addingMeeting, setAddingMeeting] = useState(false);
+  const [meetingDraft, setMeetingDraft] = useState({ date: "", title: "", notes: "" });
+  const [editingNoteId, setEditingNoteId] = useState(null);
+  const [noteEditDraft, setNoteEditDraft] = useState({ title: "", content: "", type: "note" });
+  const [editingMeetingId, setEditingMeetingId] = useState(null);
+  const [meetingEditDraft, setMeetingEditDraft] = useState({ date: "", title: "", notes: "" });
+  const [showTimeline, setShowTimeline] = useState(false);
+  const [whatsappDraft, setWhatsappDraft] = useState(null);
+  const [addingTransaction, setAddingTransaction] = useState(false);
+  const [transactionDraft, setTransactionDraft] = useState({ date: "", type: "credit", amount: "", note: "" });
+  const [editingTransactionId, setEditingTransactionId] = useState(null);
+  const [transactionEditDraft, setTransactionEditDraft] = useState({ date: "", type: "credit", amount: "", note: "" });
+  const [showLedger, setShowLedger] = useState(false);
+  useEffect(() => {
+    supabaseClient.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setCheckingSession(false);
+    });
+    const { data: sub } = supabaseClient.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+  useEffect(() => {
+    if (session) fetchClients();
+  }, [session]);
+  useEffect(() => {
+    const t = setInterval(() => setClock(Date.now()), 3e4);
+    return () => clearInterval(t);
+  }, []);
+  useEffect(() => {
+    setWhatsappDraft(null);
+    setShowTimeline(false);
+    setShowLedger(false);
+  }, [selectedId]);
+  useEffect(() => {
+    if (whatsappDraft === null || !selectedId) return;
+    const t = setTimeout(() => {
+      const parsed = whatsappDraft.split(",").map((s) => s.trim()).filter(Boolean);
+      patchClient(selectedId, { tags: parsed });
+    }, 700);
+    return () => clearTimeout(t);
+  }, [whatsappDraft]);
+  async function fetchClients() {
+    setLoading(true);
+    const { data, error } = await supabaseClient.from("clients").select("*").order("family_name").order("name");
+    if (error) {
+      alert("Couldn't load clients: " + error.message);
+    } else {
+      setClients(data);
+      if (data.length && !selectedId) setSelectedId(data[0].id);
+    }
+    setLoading(false);
+  }
+  const selected = clients.find((c) => c.id === selectedId) || null;
+  async function patchClient(id, patch) {
+    const prev = clients;
+    setClients((cs) => cs.map((c) => c.id === id ? { ...c, ...patch } : c));
+    const { error } = await supabaseClient.from("clients").update(patch).eq("id", id);
+    if (error) {
+      alert("Couldn't save that change: " + error.message);
+      setClients(prev);
+    }
+  }
+  function updateSelected(patch) {
+    if (selected) patchClient(selected.id, patch);
+  }
+  const debounceTimer = useRef(null);
+  const pendingPatch = useRef({});
+  function updateSelectedDebounced(patch) {
+    if (!selected) return;
+    const clientId = selected.id;
+    setClients((cs) => cs.map((c) => c.id === clientId ? { ...c, ...patch } : c));
+    pendingPatch.current = { ...pendingPatch.current, ...patch };
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    debounceTimer.current = setTimeout(async () => {
+      const toSave = pendingPatch.current;
+      pendingPatch.current = {};
+      const { error } = await supabaseClient.from("clients").update(toSave).eq("id", clientId);
+      if (error) alert("Couldn't save that change: " + error.message);
+    }, 700);
+  }
+  async function addClient() {
+    if (!newName.trim()) return;
+    const row = { name: newName.trim(), family_name: newFamily.trim(), tags: [], notes: [], meetings: [], transactions: [] };
+    const { data, error } = await supabaseClient.from("clients").insert(row).select().single();
+    if (error) {
+      alert("Couldn't add client: " + error.message);
+      return;
+    }
+    setClients((cs) => [...cs, data]);
+    setSelectedId(data.id);
+    setNewName("");
+    setNewFamily("");
+    setAddingClient(false);
+  }
+  async function deleteClient(id) {
+    if (!confirm("Delete this client permanently?")) return;
+    const { error } = await supabaseClient.from("clients").delete().eq("id", id);
+    if (error) {
+      alert("Couldn't delete: " + error.message);
+      return;
+    }
+    setClients((cs) => cs.filter((c) => c.id !== id));
+    if (selectedId === id) setSelectedId(null);
+  }
+  function addNote() {
+    if (!noteDraft.trim() || !selected) return;
+    const entry = { id: uid(), date: todayISO(), type: addingNoteType, title: noteTitleDraft.trim() || NOTE_TYPES[addingNoteType].label, content: noteDraft.trim() };
+    updateSelected({ notes: [entry, ...selected.notes] });
+    setNoteDraft("");
+    setNoteTitleDraft("");
+    setAddingNoteType(null);
+  }
+  function removeNote(id) {
+    updateSelected({ notes: selected.notes.filter((n) => n.id !== id) });
+  }
+  function addMeeting() {
+    if (!meetingDraft.date || !meetingDraft.title.trim() || !selected) return;
+    const entry = { id: uid(), ...meetingDraft, title: meetingDraft.title.trim() };
+    updateSelected({ meetings: [...selected.meetings, entry].sort((a, b) => a.date.localeCompare(b.date)) });
+    setMeetingDraft({ date: "", title: "", notes: "" });
+    setAddingMeeting(false);
+  }
+  function removeMeeting(id) {
+    updateSelected({ meetings: selected.meetings.filter((m) => m.id !== id) });
+  }
+  function startEditNote(n) {
+    setEditingNoteId(n.id);
+    setNoteEditDraft({ title: n.title, content: n.content, type: n.type });
+  }
+  function saveEditNote() {
+    updateSelected({ notes: selected.notes.map((n) => n.id === editingNoteId ? { ...n, ...noteEditDraft } : n) });
+    setEditingNoteId(null);
+  }
+  function startEditMeeting(m) {
+    setEditingMeetingId(m.id);
+    setMeetingEditDraft({ date: m.date, title: m.title, notes: m.notes || "" });
+  }
+  function saveEditMeeting() {
+    updateSelected({
+      meetings: selected.meetings.map((m) => m.id === editingMeetingId ? { ...m, ...meetingEditDraft } : m).sort((a, b) => a.date.localeCompare(b.date))
+    });
+    setEditingMeetingId(null);
+  }
+  function updateNoteById(id, patch) {
+    updateSelected({ notes: selected.notes.map((n) => n.id === id ? { ...n, ...patch } : n) });
+  }
+  function updateMeetingById(id, patch) {
+    updateSelected({
+      meetings: selected.meetings.map((m) => m.id === id ? { ...m, ...patch } : m).sort((a, b) => a.date.localeCompare(b.date))
+    });
+  }
+  function addTransaction() {
+    if (!transactionDraft.date || !transactionDraft.amount || !selected) return;
+    const entry = { id: uid(), date: transactionDraft.date, type: transactionDraft.type, amount: parseFloat(transactionDraft.amount) || 0, note: transactionDraft.note.trim() };
+    updateSelected({ transactions: [...selected.transactions || [], entry].sort((a, b) => b.date.localeCompare(a.date)) });
+    setTransactionDraft({ date: "", type: "credit", amount: "", note: "" });
+    setAddingTransaction(false);
+  }
+  function removeTransaction(id) {
+    updateSelected({ transactions: (selected.transactions || []).filter((t) => t.id !== id) });
+  }
+  function startEditTransaction(t) {
+    setEditingTransactionId(t.id);
+    setTransactionEditDraft({ date: t.date, type: t.type, amount: String(t.amount), note: t.note || "" });
+  }
+  function saveEditTransaction() {
+    updateSelected({
+      transactions: (selected.transactions || []).map((t) => t.id === editingTransactionId ? { ...t, date: transactionEditDraft.date, type: transactionEditDraft.type, amount: parseFloat(transactionEditDraft.amount) || 0, note: transactionEditDraft.note } : t).sort((a, b) => b.date.localeCompare(a.date))
+    });
+    setEditingTransactionId(null);
+  }
+  function updateTransactionById(id, patch) {
+    updateSelected({
+      transactions: (selected.transactions || []).map((t) => t.id === id ? { ...t, ...patch } : t).sort((a, b) => b.date.localeCompare(a.date))
+    });
+  }
+  function deleteTransactionById(id) {
+    updateSelected({ transactions: (selected.transactions || []).filter((t) => t.id !== id) });
+  }
+  function localTimeFor(offset) {
+    const o = parseFloat(offset);
+    if (isNaN(o)) return null;
+    return new Date(clock + o * 36e5).toLocaleTimeString(void 0, { hour: "numeric", minute: "2-digit" });
+  }
+  if (checkingSession) return null;
+  if (!session) return /* @__PURE__ */ React.createElement(LoginScreen, { onLoggedIn: () => {
+  } });
+  const filtered = clients.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()) || (c.family_name || "").toLowerCase().includes(search.toLowerCase()));
+  const groups = {};
+  filtered.forEach((c) => {
+    var _a;
+    const key = ((_a = c.family_name) == null ? void 0 : _a.trim()) || UNGROUPED;
+    (groups[key] = groups[key] || []).push(c);
+  });
+  const familyKeys = Object.keys(groups).filter((k) => k !== UNGROUPED).sort();
+  const occasions = [];
+  clients.forEach((c) => {
+    const b = daysUntilAnnual(c.birthday);
+    if (b !== null && b <= 21) occasions.push({ client: c, type: "Birthday", days: b });
+    const a = daysUntilAnnual(c.anniversary);
+    if (a !== null && a <= 21) occasions.push({ client: c, type: "Anniversary", days: a });
+  });
+  occasions.sort((x, y) => x.days - y.days);
+  const txns = selected && selected.transactions || [];
+  return /* @__PURE__ */ React.createElement("div", { style: { height: "100vh", display: "flex", flexDirection: "column" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 28, padding: "16px 28px", borderBottom: "1px solid #8C8763", background: "#2C3A45" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, letterSpacing: 2, color: "#B54B4B" } }, BRAND_NAME.toUpperCase()), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Sans', sans-serif", fontWeight: 600, fontSize: 21, color: "#F5F9FD" } }, "Client Dossier ", /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 9, color: "#7FD9AE", background: "#2F4A3E", border: "1px solid #3F6350", borderRadius: 20, padding: "2px 8px", marginLeft: 8 } }, "live"))), /* @__PURE__ */ React.createElement("div", { className: "scroll", style: { display: "flex", gap: 8, overflowX: "auto", flex: 1 } }, occasions.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: "#93A2AC", padding: "7px 4px" } }, "No birthdays or anniversaries in the next 3 weeks.") : occasions.map((o, i) => /* @__PURE__ */ React.createElement(
+    "div",
+    {
+      key: i,
+      className: "btn",
+      onClick: () => setSelectedId(o.client.id),
+      style: { flexShrink: 0, fontSize: 12.5, padding: "7px 12px", borderRadius: 20, border: `1px solid ${o.days === 0 ? "#B54B4B" : "#8C8763"}`, background: "#C2BE85", whiteSpace: "nowrap" }
+    },
+    /* @__PURE__ */ React.createElement("b", null, o.client.name),
+    " ",
+    /* @__PURE__ */ React.createElement("span", { style: { color: "#5B5738" } }, "\xB7 ", o.type, " \xB7"),
+    " ",
+    /* @__PURE__ */ React.createElement("b", { style: { color: o.days === 0 ? "#B54B4B" : "#3B6E5B" } }, occasionLabel(o.days))
+  ))), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => supabaseClient.auth.signOut(), style: { background: "transparent", border: "1px solid #8C8763", borderRadius: 6, padding: "7px 12px", fontSize: 12, color: "#93A2AC" } }, "Sign out")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flex: 1, minHeight: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { width: 300, flexShrink: 0, borderRight: "1px solid #8C8763", padding: "18px 16px", background: "#24313B", display: "flex", flexDirection: "column" } }, /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      placeholder: "Search clients or families\u2026",
+      value: search,
+      onChange: (e) => setSearch(e.target.value),
+      style: { width: "100%", padding: "9px 12px", borderRadius: 7, border: "1px solid #8C8763", fontSize: 13.5 }
+    }
+  ), /* @__PURE__ */ React.createElement("div", { className: "scroll", style: { marginTop: 14, overflowY: "auto", flex: 1 } }, familyKeys.map((fam) => /* @__PURE__ */ React.createElement("div", { key: fam, style: { marginBottom: 6 } }, /* @__PURE__ */ React.createElement(
+    "div",
+    {
+      className: "btn",
+      onClick: () => setCollapsedFamilies((s) => ({ ...s, [fam]: !s[fam] })),
+      style: { display: "flex", gap: 7, fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: 1, textTransform: "uppercase", color: "#93A2AC", padding: "6px 4px", fontWeight: 600 }
+    },
+    /* @__PURE__ */ React.createElement("span", null, collapsedFamilies[fam] ? "\u25B8" : "\u25BE"),
+    fam,
+    /* @__PURE__ */ React.createElement("span", { style: { marginLeft: "auto", background: "#8C8763", borderRadius: 20, fontSize: 10.5, padding: "1px 7px" } }, groups[fam].length)
+  ), !collapsedFamilies[fam] && groups[fam].map((c) => /* @__PURE__ */ React.createElement("div", { key: c.id, className: "row btn", onClick: () => setSelectedId(c.id), style: { marginLeft: 14, borderRadius: 8, padding: "8px 10px", background: c.id === selectedId ? "#2C3A45" : "transparent" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Sans', sans-serif", fontWeight: 600, fontSize: 15, color: "#F5F9FD" } }, c.name), c.relation && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: "#93A2AC" } }, c.relation))))), groups[UNGROUPED] && groups[UNGROUPED].map((c) => /* @__PURE__ */ React.createElement("div", { key: c.id, className: "row btn", onClick: () => setSelectedId(c.id), style: { borderRadius: 8, padding: "8px 10px", background: c.id === selectedId ? "#2C3A45" : "transparent" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Sans', sans-serif", fontWeight: 600, fontSize: 15, color: "#F5F9FD" } }, c.name), c.relation && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: "#93A2AC" } }, c.relation)))), addingClient ? /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12 } }, /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      autoFocus: true,
+      placeholder: "Full name",
+      value: newName,
+      onChange: (e) => setNewName(e.target.value),
+      style: { width: "100%", padding: "9px 12px", borderRadius: 7, border: "1px solid #8C8763", fontSize: 13.5, marginBottom: 8 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      placeholder: "Family name (optional)",
+      value: newFamily,
+      onChange: (e) => setNewFamily(e.target.value),
+      onKeyDown: (e) => e.key === "Enter" && addClient(),
+      style: { width: "100%", padding: "9px 12px", borderRadius: 7, border: "1px solid #8C8763", fontSize: 13.5 }
+    }
+  ), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 8 } }, /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: addClient, style: { background: "#C2BE85", color: "#1D2830", border: "none", borderRadius: 6, padding: "8px 16px", fontSize: 12.5, fontWeight: 600 } }, "Add"), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => setAddingClient(false), style: { background: "transparent", border: "1px solid #8C8763", borderRadius: 6, padding: "8px 16px", fontSize: 12.5, color: "#F5F9FD" } }, "Cancel"))) : /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => setAddingClient(true), style: { marginTop: 12, width: "100%", padding: 10, borderRadius: 7, border: "1px dashed #6B7A87", background: "transparent", color: "#93A2AC", fontSize: 13 } }, "+ Add client")), /* @__PURE__ */ React.createElement("div", { className: "scroll", style: { flex: 1, overflowY: "auto", padding: "32px 48px 80px" } }, loading ? /* @__PURE__ */ React.createElement("div", { style: { color: "#93A2AC" } }, "Loading\u2026") : !selected ? /* @__PURE__ */ React.createElement("div", { style: { color: "#93A2AC", marginTop: 60, textAlign: "center" } }, "Select a client, or add your first one.") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: 1.5, color: "#93A2AC", textTransform: "uppercase" } }, selected.family_name ? `${selected.family_name} \xB7 ` : "", selected.relation || "Contact"), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Sans', sans-serif", fontWeight: 700, fontSize: 40, color: "#F5F9FD" } }, selected.name)), /* @__PURE__ */ React.createElement("div", { style: { background: "#C2BE85", border: "1px solid #8C8763", borderRadius: 10, padding: "12px 18px", textAlign: "right" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 9.5, letterSpacing: 1, color: "#A6822C", textTransform: "uppercase" } }, "Their local time"), selected.utc_offset != null ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 22, fontWeight: 600, color: "#1D2830" } }, localTimeFor(selected.utc_offset)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10.5, color: "#5B5738" } }, selected.utc_offset >= 0 ? "+" : "", selected.utc_offset, "h from you")) : /* @__PURE__ */ React.createElement("div", { className: "btn", onClick: () => setEditingInfo(true), style: { fontSize: 12.5, color: "#A6822C", fontWeight: 600 } }, "+ Set time difference"))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 26, background: "#C2BE85", border: "1px solid #8C8763", borderRadius: 12, padding: "20px 24px" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Sans', sans-serif", fontWeight: 600, fontSize: 17 } }, "Contact & Personal"), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => setEditingInfo((v) => !v), style: { background: "none", border: "none", color: "#B54B4B", fontSize: 12.5, fontWeight: 600 } }, editingInfo ? "Done" : "Edit")), editingInfo ? /* @__PURE__ */ React.createElement("div", { style: { marginTop: 14, display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px 24px" } }, /* @__PURE__ */ React.createElement(F, { label: "Full name", v: selected.name, onC: (v) => updateSelectedDebounced({ name: v }) }), /* @__PURE__ */ React.createElement(F, { label: "WhatsApp Group", v: whatsappDraft != null ? whatsappDraft : (selected.tags || []).join(", "), onC: (v) => setWhatsappDraft(v) }), /* @__PURE__ */ React.createElement(F, { label: "Family name", v: selected.family_name, onC: (v) => updateSelectedDebounced({ family_name: v }) }), /* @__PURE__ */ React.createElement(F, { label: "Relation", v: selected.relation, onC: (v) => updateSelectedDebounced({ relation: v }) }), /* @__PURE__ */ React.createElement(F, { label: "Email", v: selected.email, onC: (v) => updateSelectedDebounced({ email: v }) }), /* @__PURE__ */ React.createElement(F, { label: "Phone", v: selected.phone, onC: (v) => updateSelectedDebounced({ phone: v }) }), /* @__PURE__ */ React.createElement(F, { label: "Address", v: selected.address, onC: (v) => updateSelectedDebounced({ address: v }), full: true }), /* @__PURE__ */ React.createElement(F, { label: "Birthday", type: "date", v: selected.birthday, onC: (v) => updateSelected({ birthday: v || null }) }), /* @__PURE__ */ React.createElement(F, { label: "Anniversary", type: "date", v: selected.anniversary, onC: (v) => updateSelected({ anniversary: v || null }) }), /* @__PURE__ */ React.createElement(F, { label: "Time difference from you (hours)", v: selected.utc_offset, onC: (v) => updateSelectedDebounced({ utc_offset: v === "" ? null : parseFloat(v) }), placeholder: "e.g. 5.5 or -8" }), /* @__PURE__ */ React.createElement(F, { label: "Personal life notes", v: selected.personal_life, onC: (v) => updateSelectedDebounced({ personal_life: v }), textarea: true, full: true }), /* @__PURE__ */ React.createElement("div", { style: { gridColumn: "1 / -1" } }, /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => deleteClient(selected.id), style: { background: "transparent", border: "1px solid #B54B4B", color: "#B54B4B", borderRadius: 6, padding: "7px 14px", fontSize: 12 } }, "Delete this client"))) : /* @__PURE__ */ React.createElement("div", { style: { marginTop: 14, display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px 24px" } }, /* @__PURE__ */ React.createElement(I, { label: "Relation", v: selected.relation }), /* @__PURE__ */ React.createElement(I, { label: "WhatsApp Group", v: (selected.tags || []).join(", ") }), /* @__PURE__ */ React.createElement(I, { label: "Email", v: selected.email }), /* @__PURE__ */ React.createElement(I, { label: "Phone", v: selected.phone }), /* @__PURE__ */ React.createElement(I, { label: "Address", v: selected.address, full: true }), /* @__PURE__ */ React.createElement(I, { label: "Birthday", v: fmtDateDMY(selected.birthday) }), /* @__PURE__ */ React.createElement(I, { label: "Anniversary", v: fmtDateDMY(selected.anniversary) }), /* @__PURE__ */ React.createElement(I, { label: "Personal life", v: selected.personal_life, full: true }))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 26, background: "#C2BE85", border: "1px solid #8C8763", borderRadius: 12, padding: "20px 24px" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Sans', sans-serif", fontWeight: 600, fontSize: 17 } }, "Upcoming Meetings"), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => setAddingMeeting((v) => !v), style: { background: "none", border: "none", color: "#B54B4B", fontSize: 12.5, fontWeight: 600 } }, addingMeeting ? "Cancel" : "+ Add")), addingMeeting && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 14, display: "flex", flexDirection: "column", gap: 8, background: "#ABA76F", padding: 14, borderRadius: 8, border: "1px solid #8C8763" } }, /* @__PURE__ */ React.createElement("input", { type: "date", value: meetingDraft.date, onChange: (e) => setMeetingDraft((m) => ({ ...m, date: e.target.value })), style: { padding: "8px 10px", borderRadius: 6, border: "1px solid #8C8763" } }), /* @__PURE__ */ React.createElement("input", { placeholder: "Meeting title", value: meetingDraft.title, onChange: (e) => setMeetingDraft((m) => ({ ...m, title: e.target.value })), style: { padding: "8px 10px", borderRadius: 6, border: "1px solid #8C8763" } }), /* @__PURE__ */ React.createElement("textarea", { placeholder: "Agenda / notes", value: meetingDraft.notes, onChange: (e) => setMeetingDraft((m) => ({ ...m, notes: e.target.value })), style: { padding: "9px 10px", borderRadius: 6, border: "1px solid #8C8763", minHeight: 60 } }), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: addMeeting, style: { background: "#C2BE85", color: "#1D2830", border: "none", borderRadius: 6, padding: "8px 16px", fontSize: 12.5, fontWeight: 600, alignSelf: "flex-start" } }, "Save meeting")), (selected.meetings || []).length === 0 && !addingMeeting && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: "#5B5738", marginTop: 12 } }, "Nothing scheduled yet."), (selected.meetings || []).map((m) => editingMeetingId === m.id ? /* @__PURE__ */ React.createElement("div", { key: m.id, style: { marginTop: 14, display: "flex", flexDirection: "column", gap: 8, background: "#ABA76F", padding: 14, borderRadius: 8, border: "1px solid #8C8763" } }, /* @__PURE__ */ React.createElement("input", { type: "date", value: meetingEditDraft.date, onChange: (e) => setMeetingEditDraft((d) => ({ ...d, date: e.target.value })), style: { padding: "8px 10px", borderRadius: 6, border: "1px solid #8C8763" } }), /* @__PURE__ */ React.createElement("input", { placeholder: "Meeting title", value: meetingEditDraft.title, onChange: (e) => setMeetingEditDraft((d) => ({ ...d, title: e.target.value })), style: { padding: "8px 10px", borderRadius: 6, border: "1px solid #8C8763" } }), /* @__PURE__ */ React.createElement("textarea", { placeholder: "Agenda / notes", value: meetingEditDraft.notes, onChange: (e) => setMeetingEditDraft((d) => ({ ...d, notes: e.target.value })), style: { padding: "9px 10px", borderRadius: 6, border: "1px solid #8C8763", minHeight: 60 } }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: saveEditMeeting, style: { background: "#C2BE85", color: "#1D2830", border: "none", borderRadius: 6, padding: "8px 16px", fontSize: 12.5, fontWeight: 600 } }, "Save"), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => setEditingMeetingId(null), style: { background: "transparent", border: "1px solid #8C8763", borderRadius: 6, padding: "8px 16px", fontSize: 12.5 } }, "Cancel"))) : /* @__PURE__ */ React.createElement("div", { key: m.id, style: { display: "flex", gap: 14, marginTop: 14, paddingBottom: 14, borderBottom: "1px solid #2C3A45" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, fontWeight: 600, color: "#3B6E5B", background: "#E4EDE8", padding: "6px 10px", borderRadius: 6, whiteSpace: "nowrap" } }, (/* @__PURE__ */ new Date(m.date + "T00:00:00")).toLocaleDateString(void 0, { month: "short", day: "numeric" })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, cursor: "pointer" }, onClick: () => startEditMeeting(m) }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600 } }, m.title), m.notes && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: "#5B5738", marginTop: 3 } }, m.notes)), /* @__PURE__ */ React.createElement("span", { className: "x", onClick: () => startEditMeeting(m), style: { cursor: "pointer", color: "#A6822C", opacity: 0.75, fontSize: 13, marginRight: 4 } }, "\u270E"), /* @__PURE__ */ React.createElement("span", { className: "x", onClick: () => removeMeeting(m.id), style: { cursor: "pointer", color: "#7A7550", opacity: 0.7 } }, "\u2715")))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 26, background: "#C2BE85", border: "1px solid #8C8763", borderRadius: 12, padding: "20px 24px" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Sans', sans-serif", fontWeight: 600, fontSize: 17 } }, "History & Notes"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" } }, Object.entries(NOTE_TYPES).map(([key, t]) => /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      key,
+      className: "btn",
+      onClick: () => setAddingNoteType(key),
+      style: { fontSize: 12, fontWeight: 600, padding: "6px 12px", borderRadius: 20, border: `1px solid ${t.color}`, background: addingNoteType === key ? t.color : "transparent", color: addingNoteType === key ? "#fff" : t.color }
+    },
+    "+ ",
+    t.label
+  ))), addingNoteType && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 14, display: "flex", flexDirection: "column", gap: 8, background: "#ABA76F", padding: 14, borderRadius: 8, border: "1px solid #8C8763" } }, /* @__PURE__ */ React.createElement("input", { placeholder: "Title (optional)", value: noteTitleDraft, onChange: (e) => setNoteTitleDraft(e.target.value), style: { padding: "8px 10px", borderRadius: 6, border: "1px solid #8C8763" } }), /* @__PURE__ */ React.createElement("textarea", { autoFocus: true, placeholder: "What happened\u2026", value: noteDraft, onChange: (e) => setNoteDraft(e.target.value), style: { padding: "9px 10px", borderRadius: 6, border: "1px solid #8C8763", minHeight: 60 } }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: addNote, style: { background: "#C2BE85", color: "#1D2830", border: "none", borderRadius: 6, padding: "8px 16px", fontSize: 12.5, fontWeight: 600 } }, "Save"), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => {
+    setAddingNoteType(null);
+    setNoteDraft("");
+    setNoteTitleDraft("");
+  }, style: { background: "transparent", border: "1px solid #8C8763", borderRadius: 6, padding: "8px 16px", fontSize: 12.5 } }, "Cancel"))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 20 } }, previewEvents(selected).length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: "#5B5738" } }, "No history yet \u2014 add your first note above."), previewEvents(selected).map((n) => {
+    if (n.__kind === "meeting") {
+      const isUpcoming = n.date >= todayISO();
+      const mColor = "#3B6E5B";
+      return /* @__PURE__ */ React.createElement("div", { key: n.id, style: { display: "flex", gap: 12, paddingBottom: 20 } }, /* @__PURE__ */ React.createElement("div", { style: { width: 9, height: 9, borderRadius: "50%", background: mColor, marginTop: 5, flexShrink: 0 } }), /* @__PURE__ */ React.createElement("div", { onClick: () => setShowTimeline(true), style: { flex: 1, borderBottom: "1px solid #2C3A45", paddingBottom: 16, cursor: "pointer" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10.5, fontWeight: 600, border: `1px solid ${mColor}`, color: mColor, borderRadius: 20, padding: "2px 8px" } }, isUpcoming ? "Upcoming Meeting" : "Past Meeting"), /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "#5B5738" } }, fmtDateDMY(n.date))), /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, marginTop: 6 } }, n.title), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: "#5C543F", marginTop: 4, lineHeight: 1.55 } }, n.content)));
+    }
+    const t = NOTE_TYPES[n.type];
+    if (editingNoteId === n.id) {
+      return /* @__PURE__ */ React.createElement("div", { key: n.id, style: { marginBottom: 16, display: "flex", flexDirection: "column", gap: 8, background: "#ABA76F", padding: 14, borderRadius: 8, border: "1px solid #8C8763" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } }, Object.entries(NOTE_TYPES).map(([key, nt]) => /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          key,
+          className: "btn",
+          onClick: () => setNoteEditDraft((d) => ({ ...d, type: key })),
+          style: { fontSize: 12, fontWeight: 600, padding: "6px 12px", borderRadius: 20, border: `1px solid ${nt.color}`, background: noteEditDraft.type === key ? nt.color : "transparent", color: noteEditDraft.type === key ? "#fff" : nt.color }
+        },
+        nt.label
+      ))), /* @__PURE__ */ React.createElement("input", { placeholder: "Title", value: noteEditDraft.title, onChange: (e) => setNoteEditDraft((d) => ({ ...d, title: e.target.value })), style: { padding: "8px 10px", borderRadius: 6, border: "1px solid #8C8763" } }), /* @__PURE__ */ React.createElement("textarea", { value: noteEditDraft.content, onChange: (e) => setNoteEditDraft((d) => ({ ...d, content: e.target.value })), style: { padding: "9px 10px", borderRadius: 6, border: "1px solid #8C8763", minHeight: 60 } }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: saveEditNote, style: { background: "#C2BE85", color: "#1D2830", border: "none", borderRadius: 6, padding: "8px 16px", fontSize: 12.5, fontWeight: 600 } }, "Save"), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => setEditingNoteId(null), style: { background: "transparent", border: "1px solid #8C8763", borderRadius: 6, padding: "8px 16px", fontSize: 12.5 } }, "Cancel")));
+    }
+    return /* @__PURE__ */ React.createElement("div", { key: n.id, style: { display: "flex", gap: 12, paddingBottom: 20 } }, /* @__PURE__ */ React.createElement("div", { style: { width: 9, height: 9, borderRadius: "50%", background: t.color, marginTop: 5, flexShrink: 0 } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, borderBottom: "1px solid #2C3A45", paddingBottom: 16 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10.5, fontWeight: 600, border: `1px solid ${t.color}`, color: t.color, borderRadius: 20, padding: "2px 8px" } }, t.label), /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "#5B5738" } }, fmtDateDMY(n.date)), /* @__PURE__ */ React.createElement("span", { className: "x", onClick: () => startEditNote(n), style: { marginLeft: "auto", cursor: "pointer", color: "#A6822C", opacity: 0.75, fontSize: 13 } }, "\u270E"), /* @__PURE__ */ React.createElement("span", { className: "x", onClick: () => removeNote(n.id), style: { cursor: "pointer", color: "#7A7550", opacity: 0.7 } }, "\u2715")), /* @__PURE__ */ React.createElement("div", { style: { cursor: "pointer" }, onClick: () => startEditNote(n) }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, marginTop: 6 } }, n.title), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: "#5C543F", marginTop: 4, lineHeight: 1.55 } }, n.content))));
+  })), /* @__PURE__ */ React.createElement("div", { className: "btn", onClick: () => setShowTimeline(true), style: { marginTop: 18, paddingTop: 16, borderTop: "1px solid #8C8763", textAlign: "center", fontSize: 13, fontWeight: 600, color: "#B54B4B" } }, "View full timeline", /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", color: "#5B5738", fontWeight: 400 } }, " \xB7 every note & meeting, nothing ever drops off \u2192"))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 26, background: "#C2BE85", border: "1px solid #8C8763", borderRadius: 12, padding: "20px 24px" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Sans', sans-serif", fontWeight: 600, fontSize: 17 } }, "Deposits & Withdrawals"), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => setAddingTransaction((v) => !v), style: { background: "none", border: "none", color: "#B54B4B", fontSize: 12.5, fontWeight: 600 } }, addingTransaction ? "Cancel" : "+ Add")), addingTransaction && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 14, display: "flex", flexDirection: "column", gap: 8, background: "#ABA76F", padding: 14, borderRadius: 8, border: "1px solid #8C8763" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      className: "btn",
+      onClick: () => setTransactionDraft((d) => ({ ...d, type: "credit" })),
+      style: { flex: 1, fontSize: 12.5, fontWeight: 600, padding: "8px 12px", borderRadius: 6, border: "1px solid #2F4A3E", background: transactionDraft.type === "credit" ? "#2F4A3E" : "transparent", color: transactionDraft.type === "credit" ? "#7FD9AE" : "#2F4A3E" }
+    },
+    "Credit (deposit)"
+  ), /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      className: "btn",
+      onClick: () => setTransactionDraft((d) => ({ ...d, type: "debit" })),
+      style: { flex: 1, fontSize: 12.5, fontWeight: 600, padding: "8px 12px", borderRadius: 6, border: "1px solid #B54B4B", background: transactionDraft.type === "debit" ? "#B54B4B" : "transparent", color: transactionDraft.type === "debit" ? "#F5F9FD" : "#B54B4B" }
+    },
+    "Debit (withdrawal)"
+  )), /* @__PURE__ */ React.createElement("input", { type: "date", value: transactionDraft.date, onChange: (e) => setTransactionDraft((d) => ({ ...d, date: e.target.value })), style: { padding: "8px 10px", borderRadius: 6, border: "1px solid #8C8763" } }), /* @__PURE__ */ React.createElement("input", { type: "number", step: "0.01", placeholder: "Amount", value: transactionDraft.amount, onChange: (e) => setTransactionDraft((d) => ({ ...d, amount: e.target.value })), style: { padding: "8px 10px", borderRadius: 6, border: "1px solid #8C8763" } }), /* @__PURE__ */ React.createElement("input", { placeholder: "Note (optional)", value: transactionDraft.note, onChange: (e) => setTransactionDraft((d) => ({ ...d, note: e.target.value })), style: { padding: "8px 10px", borderRadius: 6, border: "1px solid #8C8763" } }), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: addTransaction, style: { background: "#C2BE85", color: "#1D2830", border: "1px solid #8C8763", borderRadius: 6, padding: "8px 16px", fontSize: 12.5, fontWeight: 600, alignSelf: "flex-start" } }, "Save entry")), txns.length === 0 && !addingTransaction && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: "#5B5738", marginTop: 12 } }, "No transactions recorded yet."), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 14 } }, txns.slice(0, 2).map((t) => editingTransactionId === t.id ? /* @__PURE__ */ React.createElement("div", { key: t.id, style: { marginBottom: 12, display: "flex", flexDirection: "column", gap: 8, background: "#ABA76F", padding: 14, borderRadius: 8, border: "1px solid #8C8763" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      className: "btn",
+      onClick: () => setTransactionEditDraft((d) => ({ ...d, type: "credit" })),
+      style: { flex: 1, fontSize: 12.5, fontWeight: 600, padding: "8px 12px", borderRadius: 6, border: "1px solid #2F4A3E", background: transactionEditDraft.type === "credit" ? "#2F4A3E" : "transparent", color: transactionEditDraft.type === "credit" ? "#7FD9AE" : "#2F4A3E" }
+    },
+    "Credit"
+  ), /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      className: "btn",
+      onClick: () => setTransactionEditDraft((d) => ({ ...d, type: "debit" })),
+      style: { flex: 1, fontSize: 12.5, fontWeight: 600, padding: "8px 12px", borderRadius: 6, border: "1px solid #B54B4B", background: transactionEditDraft.type === "debit" ? "#B54B4B" : "transparent", color: transactionEditDraft.type === "debit" ? "#F5F9FD" : "#B54B4B" }
+    },
+    "Debit"
+  )), /* @__PURE__ */ React.createElement("input", { type: "date", value: transactionEditDraft.date, onChange: (e) => setTransactionEditDraft((d) => ({ ...d, date: e.target.value })), style: { padding: "8px 10px", borderRadius: 6, border: "1px solid #8C8763" } }), /* @__PURE__ */ React.createElement("input", { type: "number", step: "0.01", value: transactionEditDraft.amount, onChange: (e) => setTransactionEditDraft((d) => ({ ...d, amount: e.target.value })), style: { padding: "8px 10px", borderRadius: 6, border: "1px solid #8C8763" } }), /* @__PURE__ */ React.createElement("input", { placeholder: "Note", value: transactionEditDraft.note, onChange: (e) => setTransactionEditDraft((d) => ({ ...d, note: e.target.value })), style: { padding: "8px 10px", borderRadius: 6, border: "1px solid #8C8763" } }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: saveEditTransaction, style: { background: "#C2BE85", color: "#1D2830", border: "1px solid #8C8763", borderRadius: 6, padding: "8px 16px", fontSize: 12.5, fontWeight: 600 } }, "Save"), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => setEditingTransactionId(null), style: { background: "transparent", border: "1px solid #8C8763", borderRadius: 6, padding: "8px 16px", fontSize: 12.5 } }, "Cancel"))) : /* @__PURE__ */ React.createElement("div", { key: t.id, style: { display: "flex", alignItems: "center", gap: 14, paddingBottom: 12, marginBottom: 12, borderBottom: "1px solid #2C3A45" } }, /* @__PURE__ */ React.createElement("div", { style: {
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: 12,
+    fontWeight: 600,
+    padding: "6px 10px",
+    borderRadius: 6,
+    whiteSpace: "nowrap",
+    color: t.type === "credit" ? "#2F4A3E" : "#B54B4B",
+    background: t.type === "credit" ? "#DDE7DA" : "#EBD3D3"
+  } }, (/* @__PURE__ */ new Date(t.date + "T00:00:00")).toLocaleDateString(void 0, { month: "short", day: "numeric" })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, cursor: "pointer" }, onClick: () => startEditTransaction(t) }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600 } }, t.type === "credit" ? "Credited" : "Debited", " \u2014 ", fmtMoney(t.amount)), t.note && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: "#5B5738", marginTop: 3 } }, t.note)), /* @__PURE__ */ React.createElement("span", { className: "x", onClick: () => startEditTransaction(t), style: { cursor: "pointer", color: "#A6822C", opacity: 0.75, fontSize: 13, marginRight: 4 } }, "\u270E"), /* @__PURE__ */ React.createElement("span", { className: "x", onClick: () => removeTransaction(t.id), style: { cursor: "pointer", color: "#7A7550", opacity: 0.7 } }, "\u2715")))), txns.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "btn", onClick: () => setShowLedger(true), style: { marginTop: 6, paddingTop: 16, borderTop: "1px solid #8C8763", textAlign: "center", fontSize: 13, fontWeight: 600, color: "#B54B4B" } }, "View full ledger", /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", color: "#5B5738", fontWeight: 400 } }, " \xB7 since inception, credits and debits side by side \u2192")))))), showTimeline && selected && /* @__PURE__ */ React.createElement(
+    TimelineOverlay,
+    {
+      client: selected,
+      onClose: () => setShowTimeline(false),
+      onUpdateNote: updateNoteById,
+      onDeleteNote: removeNote,
+      onUpdateMeeting: updateMeetingById,
+      onDeleteMeeting: removeMeeting
+    }
+  ), showLedger && selected && /* @__PURE__ */ React.createElement(
+    LedgerOverlay,
+    {
+      client: selected,
+      onClose: () => setShowLedger(false),
+      onUpdateTransaction: updateTransactionById,
+      onDeleteTransaction: deleteTransactionById
+    }
+  ));
+}
+function TimelineOverlay({ client, onClose, onUpdateNote, onDeleteNote, onUpdateMeeting, onDeleteMeeting }) {
+  const [openId, setOpenId] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+  const [draft, setDraft] = useState({ date: "", title: "", content: "", type: "note" });
+  const events = [
+    ...(client.notes || []).map((n) => ({ id: n.id, date: n.date, kind: "note", label: NOTE_TYPES[n.type].label, color: NOTE_TYPES[n.type].color, title: n.title, content: n.content, raw: n })),
+    ...(client.meetings || []).map((m) => ({ id: m.id, date: m.date, kind: "meeting", label: m.date >= todayISO() ? "Upcoming Meeting" : "Past Meeting", color: "#3B6E5B", title: m.title, content: m.notes, raw: m }))
+  ].sort((a, b) => b.date.localeCompare(a.date));
+  function startEdit(e) {
+    setEditingId(e.id);
+    setOpenId(e.id);
+    setDraft({ date: e.date, title: e.title, content: e.content || "", type: e.raw.type || "note" });
+  }
+  function saveEdit(e) {
+    if (e.kind === "note") onUpdateNote(e.id, { title: draft.title, content: draft.content, type: draft.type });
+    else onUpdateMeeting(e.id, { date: draft.date, title: draft.title, notes: draft.content });
+    setEditingId(null);
+  }
+  function deleteEvent(e) {
+    if (e.kind === "note") onDeleteNote(e.id);
+    else onDeleteMeeting(e.id);
+    setEditingId(null);
+    setOpenId(null);
+  }
+  let lastYear = null;
+  return /* @__PURE__ */ React.createElement("div", { onClick: onClose, style: { position: "fixed", inset: 0, background: "rgba(27,36,48,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 24 } }, /* @__PURE__ */ React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { background: "#C2BE85", borderRadius: 16, width: "min(720px, 100%)", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 60px rgba(0,0,0,0.25)" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "22px 28px", borderBottom: "1px solid #8C8763" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: 1.5, color: "#5B5738", textTransform: "uppercase" } }, "Full timeline"), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Sans', sans-serif", fontWeight: 700, fontSize: 26, color: "#F5F9FD", marginTop: 3 } }, client.name)), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: onClose, style: { background: "#fff", border: "1px solid #8C8763", borderRadius: 7, padding: "7px 12px", fontSize: 12.5, fontWeight: 600, color: "#5B5738" } }, "\u2715 Close")), /* @__PURE__ */ React.createElement("div", { className: "scroll", style: { padding: "22px 28px 32px", overflowY: "auto" } }, events.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: "#5B5738" } }, "Nothing recorded yet for ", client.name, ".") : events.map((e) => {
+    const year = e.date.slice(0, 4);
+    const showYear = year !== lastYear;
+    lastYear = year;
+    const open = openId === e.id;
+    const editing = editingId === e.id;
+    return /* @__PURE__ */ React.createElement("div", { key: e.id, style: { display: "flex", gap: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", width: 20, flexShrink: 0, position: "relative" } }, showYear && /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, fontWeight: 600, color: "#A6822C", marginBottom: 6, letterSpacing: 1 } }, year), /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", top: 8, bottom: 0, width: 2, background: "#8C8763" } }), /* @__PURE__ */ React.createElement("div", { className: "btn", onClick: () => setOpenId(open ? null : e.id), style: { width: 13, height: 13, borderRadius: "50%", background: e.color, border: `3px solid ${open ? e.color : "#C2BE85"}`, marginTop: 2, zIndex: 1, boxShadow: "0 0 0 1px #8C8763" } })), editing ? /* @__PURE__ */ React.createElement("div", { style: { flex: 1, marginBottom: 18, display: "flex", flexDirection: "column", gap: 8, background: "#C2BE85", padding: 14, borderRadius: 8, border: "1px solid #8C8763" } }, e.kind === "note" ? /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } }, Object.entries(NOTE_TYPES).map(([key, nt]) => /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        key,
+        className: "btn",
+        onClick: () => setDraft((d) => ({ ...d, type: key })),
+        style: { fontSize: 12, fontWeight: 600, padding: "6px 12px", borderRadius: 20, border: `1px solid ${nt.color}`, background: draft.type === key ? nt.color : "transparent", color: draft.type === key ? "#fff" : nt.color }
+      },
+      nt.label
+    ))) : /* @__PURE__ */ React.createElement("input", { type: "date", value: draft.date, onChange: (ev) => setDraft((d) => ({ ...d, date: ev.target.value })), style: { padding: "8px 10px", borderRadius: 6, border: "1px solid #8C8763" } }), /* @__PURE__ */ React.createElement("input", { placeholder: "Title", value: draft.title, onChange: (ev) => setDraft((d) => ({ ...d, title: ev.target.value })), style: { padding: "8px 10px", borderRadius: 6, border: "1px solid #8C8763" } }), /* @__PURE__ */ React.createElement("textarea", { value: draft.content, onChange: (ev) => setDraft((d) => ({ ...d, content: ev.target.value })), style: { padding: "9px 10px", borderRadius: 6, border: "1px solid #8C8763", minHeight: 60 } }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => saveEdit(e), style: { background: "#C2BE85", color: "#1D2830", border: "none", borderRadius: 6, padding: "8px 16px", fontSize: 12.5, fontWeight: 600 } }, "Save"), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => setEditingId(null), style: { background: "transparent", border: "1px solid #8C8763", borderRadius: 6, padding: "8px 16px", fontSize: 12.5 } }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => deleteEvent(e), style: { background: "transparent", border: "1px solid #B54B4B", color: "#B54B4B", borderRadius: 6, padding: "8px 16px", fontSize: 12.5 } }, "Delete"))) : /* @__PURE__ */ React.createElement("div", { className: "btn", onClick: () => setOpenId(open ? null : e.id), style: { flex: 1, background: "#C2BE85", border: `1px solid ${open ? e.color : "#8C8763"}`, borderRadius: 10, padding: "12px 16px", marginBottom: 18 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 10.5, fontWeight: 600, border: `1px solid ${e.color}`, color: e.color, borderRadius: 20, padding: "2px 8px" } }, e.label), /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "#5B5738" } }, fmtDateDMY(e.date)), /* @__PURE__ */ React.createElement("span", { className: "x", onClick: (ev) => {
+      ev.stopPropagation();
+      startEdit(e);
+    }, style: { marginLeft: "auto", cursor: "pointer", color: "#A6822C", opacity: 0.75, fontSize: 13 } }, "\u270E"), /* @__PURE__ */ React.createElement("span", { style: { color: "#5B5738", fontSize: 12 } }, open ? "\u25BE" : "\u25B8")), /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, marginTop: 6 } }, e.title), open && e.content && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13.5, color: "#5C543F", marginTop: 8, lineHeight: 1.55 } }, e.content)));
+  }))));
+}
+function LedgerOverlay({ client, onClose, onUpdateTransaction, onDeleteTransaction }) {
+  const [editingId, setEditingId] = useState(null);
+  const [draft, setDraft] = useState({ date: "", amount: "", note: "" });
+  const txns = client.transactions || [];
+  const credits = txns.filter((t) => t.type === "credit").sort((a, b) => b.date.localeCompare(a.date));
+  const debits = txns.filter((t) => t.type === "debit").sort((a, b) => b.date.localeCompare(a.date));
+  const totalCredited = credits.reduce((s, t) => s + (parseFloat(t.amount) || 0), 0);
+  const totalDebited = debits.reduce((s, t) => s + (parseFloat(t.amount) || 0), 0);
+  function startEdit(t) {
+    setEditingId(t.id);
+    setDraft({ date: t.date, amount: String(t.amount), note: t.note || "" });
+  }
+  function saveEdit(t) {
+    onUpdateTransaction(t.id, { date: draft.date, amount: parseFloat(draft.amount) || 0, note: draft.note });
+    setEditingId(null);
+  }
+  function Column({ title, color, bg, items }) {
+    return /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: 1.5, color, textTransform: "uppercase", fontWeight: 600, marginBottom: 12 } }, title), items.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: "#5B5738" } }, "None recorded."), items.map((t) => editingId === t.id ? /* @__PURE__ */ React.createElement("div", { key: t.id, style: { marginBottom: 12, display: "flex", flexDirection: "column", gap: 8, background: bg, padding: 12, borderRadius: 8, border: `1px solid ${color}` } }, /* @__PURE__ */ React.createElement("input", { type: "date", value: draft.date, onChange: (e) => setDraft((d) => ({ ...d, date: e.target.value })), style: { padding: "7px 9px", borderRadius: 6, border: "1px solid #8C8763" } }), /* @__PURE__ */ React.createElement("input", { type: "number", step: "0.01", value: draft.amount, onChange: (e) => setDraft((d) => ({ ...d, amount: e.target.value })), style: { padding: "7px 9px", borderRadius: 6, border: "1px solid #8C8763" } }), /* @__PURE__ */ React.createElement("input", { placeholder: "Note", value: draft.note, onChange: (e) => setDraft((d) => ({ ...d, note: e.target.value })), style: { padding: "7px 9px", borderRadius: 6, border: "1px solid #8C8763" } }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => saveEdit(t), style: { background: "#C2BE85", color: "#1D2830", border: "1px solid #8C8763", borderRadius: 6, padding: "6px 12px", fontSize: 12 } }, "Save"), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => setEditingId(null), style: { background: "transparent", border: "1px solid #8C8763", borderRadius: 6, padding: "6px 12px", fontSize: 12 } }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => {
+      onDeleteTransaction(t.id);
+      setEditingId(null);
+    }, style: { background: "transparent", border: "1px solid #B54B4B", color: "#B54B4B", borderRadius: 6, padding: "6px 12px", fontSize: 12 } }, "Delete"))) : /* @__PURE__ */ React.createElement("div", { key: t.id, className: "btn", onClick: () => startEdit(t), style: { marginBottom: 12, background: bg, padding: "10px 14px", borderRadius: 8, border: `1px solid ${color}55` } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "#5B5738" } }, fmtDateDMY(t.date)), /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "'IBM Plex Sans', sans-serif", fontWeight: 700, color } }, fmtMoney(t.amount))), t.note && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: "#5C543F", marginTop: 4 } }, t.note))));
+  }
+  return /* @__PURE__ */ React.createElement("div", { onClick: onClose, style: { position: "fixed", inset: 0, background: "rgba(27,36,48,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 24 } }, /* @__PURE__ */ React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { background: "#C2BE85", borderRadius: 16, width: "min(880px, 100%)", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 60px rgba(0,0,0,0.25)" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "22px 28px", borderBottom: "1px solid #8C8763" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: 1.5, color: "#5B5738", textTransform: "uppercase" } }, "Ledger since inception"), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Sans', sans-serif", fontWeight: 700, fontSize: 26, color: "#F5F9FD", marginTop: 3 } }, client.name), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 20, marginTop: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: "#2F4A3E", fontWeight: 600 } }, "Credited: ", fmtMoney(totalCredited)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: "#B54B4B", fontWeight: 600 } }, "Debited: ", fmtMoney(totalDebited)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: "#1D2830", fontWeight: 600 } }, "Net: ", fmtMoney(totalCredited - totalDebited)))), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: onClose, style: { background: "#fff", border: "1px solid #8C8763", borderRadius: 7, padding: "7px 12px", fontSize: 12.5, fontWeight: 600, color: "#5B5738" } }, "\u2715 Close")), /* @__PURE__ */ React.createElement("div", { className: "scroll", style: { padding: "22px 28px 32px", overflowY: "auto", display: "flex", gap: 24, position: "relative" } }, /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", left: "50%", top: 0, bottom: 0, width: 1, background: "#8C8763" } }), /* @__PURE__ */ React.createElement(Column, { title: "Credited", color: "#2F4A3E", bg: "#DDE7DA", items: credits }), /* @__PURE__ */ React.createElement(Column, { title: "Debited", color: "#B54B4B", bg: "#EBD3D3", items: debits }))));
+}
+function I({ label, v, full }) {
+  return /* @__PURE__ */ React.createElement("div", { style: { gridColumn: full ? "1 / -1" : "auto" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10.5, letterSpacing: 1, textTransform: "uppercase", color: "#5B5738", marginBottom: 4 } }, label), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, lineHeight: 1.5 } }, v || "\u2014"));
+}
+function F({ label, v, onC, textarea, full, placeholder, type }) {
+  return /* @__PURE__ */ React.createElement("div", { style: { gridColumn: full ? "1 / -1" : "auto" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10.5, letterSpacing: 1, textTransform: "uppercase", color: "#5B5738", marginBottom: 4 } }, label), textarea ? /* @__PURE__ */ React.createElement("textarea", { value: v || "", placeholder, onChange: (e) => onC(e.target.value), style: { width: "100%", padding: "9px 10px", borderRadius: 6, border: "1px solid #8C8763", minHeight: 70 } }) : /* @__PURE__ */ React.createElement("input", { type: type || "text", value: v != null ? v : "", placeholder, onChange: (e) => onC(e.target.value), style: { width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #8C8763" } }));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(/* @__PURE__ */ React.createElement(App, null));
+
+</script>
+</body>
+</html>
